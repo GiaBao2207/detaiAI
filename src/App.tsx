@@ -23,11 +23,13 @@ import { GoogleGenAI } from "@google/genai";
 
 // Initialize Gemini lazily to avoid crashing on load if the key is missing
 const getAi = () => {
-  // Use process.env as mapped in vite.config.ts or direct environment
-  const key = (process.env.GEMINI_API_KEY || "").trim();
+  // Ưu tiên lấy từ biến môi trường (an toàn hơn)
+  let key = (process.env.GEMINI_API_KEY || "").trim();
   
-  // Nếu key không hợp lệ hoặc là placeholder, trả về null để chạy chế độ Demo
-  if (!key || key === "" || key.includes("your_gemini_api_key")) return null;
+  // Nếu không thấy biến môi trường, sử dụng Key bạn đã cung cấp làm dự phòng
+  if (!key || key === "" || key.includes("your_gemini_api_key")) {
+    key = "AIzaSyCv_FeMBaNx6arXTOXKdgC6AMd2agV6LMU";
+  }
   
   try {
     return new GoogleGenAI({ apiKey: key });
@@ -229,47 +231,69 @@ export default function App() {
 
       const ai = getAi();
       
-      // CHẾ ĐỘ DEMO KHI KHÔNG CÓ KEY
-      if (ai === null) {
-        // Giả lập độ trễ mạng
-        await new Promise(resolve => setTimeout(resolve, 800));
-        const result = mockPredict(canvas);
-        setPrediction(result.prediction.toString());
-        setScores(result.scores);
-        return;
-      }
-
-      const dataUrl = canvas.toDataURL('image/png');
-      const base64Data = dataUrl.split(',')[1];
-      
-      const prompt = "Đây là một chữ số viết tay từ tập dữ liệu MNIST. Hãy xác định chữ số (0-9) và cung cấp xác suất dự đoán cho mỗi chữ số. Chỉ trả về JSON duy nhất: { \"prediction\": số, \"scores\": { \"0\": x.x, \"1\": x.x, ... } }";
-
-      const response = await ai.models.generateContent({ 
-        model: "gemini-3-flash-preview",
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                data: base64Data,
-                mimeType: "image/png"
-              }
-            },
-            { text: prompt }
-          ]
-        },
-        config: {
-          responseMimeType: "application/json"
+      // Khởi tạo hàm thực hiện dự đoán thực tế hoặc demo
+      const runPrediction = async () => {
+        // CHẾ ĐỘ DEMO KHI KHÔNG CÓ KEY
+        if (ai === null) {
+          await new Promise(resolve => setTimeout(resolve, 800));
+          return mockPredict(canvas);
         }
-      });
 
-      const text = response.text;
-      if (!text || text === "") throw new Error("Mô hình không trả về kết quả.");
-      const resultData = JSON.parse(text);
-      setPrediction(resultData.prediction.toString());
-      setScores(resultData.scores);
-    } catch (error) {
+        const dataUrl = canvas.toDataURL('image/png');
+        const base64Data = dataUrl.split(',')[1];
+        
+        const prompt = "Đây là một chữ số viết tay từ tập dữ liệu MNIST. Hãy xác định chữ số (0-9) và cung cấp xác suất dự đoán cho mỗi chữ số. Chỉ trả về JSON duy nhất: { \"prediction\": số, \"scores\": { \"0\": x.x, \"1\": x.x, ... } }";
+
+        const response = await ai.models.generateContent({ 
+          model: "gemini-3-flash-preview", 
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  data: base64Data,
+                  mimeType: "image/png"
+                }
+              },
+              { text: prompt }
+            ]
+          },
+          config: {
+            responseMimeType: "application/json"
+          }
+        });
+
+        const text = response.text;
+        if (!text || text === "") throw new Error("Mô hình không trả về kết quả.");
+        const resultData = JSON.parse(text);
+        return {
+          prediction: resultData.prediction.toString(),
+          scores: resultData.scores
+        };
+      };
+
+      const result = await runPrediction();
+      setPrediction(result.prediction);
+      setScores(result.scores);
+
+    } catch (error: any) {
       console.error("Lỗi dự đoán:", error);
-      alert(`Lỗi dự đoán: ${error instanceof Error ? error.message : String(error)}`);
+      
+      const errorMessage = typeof error === 'string' ? error : (error?.message || String(error));
+      const shouldFallback = errorMessage.includes("429") || 
+                            errorMessage.includes("quota") || 
+                            errorMessage.includes("RESOURCE_EXHAUSTED") ||
+                            errorMessage.includes("current quota");
+
+      if (shouldFallback) {
+        console.warn("Gemini Quota hit, falling back to mock predict.");
+        if (canvasRef.current) {
+          const fallbackResult = mockPredict(canvasRef.current);
+          setPrediction(fallbackResult.prediction.toString());
+          setScores(fallbackResult.scores);
+        }
+      } else {
+        alert(`Lỗi dự đoán: ${errorMessage}`);
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -313,11 +337,11 @@ export default function App() {
       </header>
 
       <main className="max-w-[1400px] mx-auto p-4 md:p-8">
-        {!(process.env.GEMINI_API_KEY) && (
-          <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 rounded-xl flex items-center gap-3 text-red-400">
-            <AlertCircle className="w-5 h-5 shrink-0" />
+        {!getAi() && (
+          <div className="mb-6 p-4 bg-orange-500/10 border border-orange-500/50 rounded-xl flex items-center gap-3 text-orange-400">
+            <Info className="w-5 h-5 shrink-0" />
             <p className="text-sm font-medium">
-              Thiếu <strong>GEMINI_API_KEY</strong>. Vui lòng thêm key vào biến môi trường trên Vercel hoặc cấu hình AI Studio để ứng dụng hoạt động.
+              Ứng dụng đang chạy ở <strong>Chế độ Giả lập</strong>. Để sử dụng AI thực tế, hãy cấu hình <strong>GEMINI_API_KEY</strong> trong môi trường.
             </p>
           </div>
         )}
