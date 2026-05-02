@@ -23,10 +23,38 @@ import { GoogleGenAI } from "@google/genai";
 
 // Initialize Gemini lazily to avoid crashing on load if the key is missing
 const getAi = () => {
-  // Ưu tiên VITE_ prefixed cho Vite/Vercel
-  const key = (import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || "").trim();
-  if (!key || key === "" || key === "your_gemini_api_key_here") return null;
-  return new GoogleGenAI(key);
+  // Use process.env as mapped in vite.config.ts or direct environment
+  const key = (process.env.GEMINI_API_KEY || "").trim();
+  
+  // Nếu key không hợp lệ hoặc là placeholder, trả về null để chạy chế độ Demo
+  if (!key || key === "" || key.includes("your_gemini_api_key")) return null;
+  
+  try {
+    return new GoogleGenAI({ apiKey: key });
+  } catch (e) {
+    console.error("Lỗi khởi tạo Gemini:", e);
+    return null;
+  }
+};
+
+const mockPredict = (canvas: HTMLCanvasElement) => {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return { prediction: 0, scores: {} };
+  
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+  let whitePixels = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i] > 128) whitePixels++;
+  }
+  
+  // Thuật toán giả lập dựa trên mật độ pixel để có kết quả thay đổi
+  const prediction = (whitePixels % 7 + 2) % 10; 
+  const scores: Record<number, number> = {};
+  for (let i = 0; i < 10; i++) {
+    scores[i] = i === prediction ? 0.85 : 0.15 / 9;
+  }
+  return { prediction, scores };
 };
 
 const TRAINING_CODE = `import tensorflow as tf
@@ -196,41 +224,48 @@ export default function App() {
 
     setIsProcessing(true);
     try {
-      const ai = getAi();
-      if (!ai) {
-        alert("Thiếu API Key cho Gemini. Vui lòng thiết lập biến môi trường GEMINI_API_KEY (hoặc VITE_GEMINI_API_KEY).");
-        setIsProcessing(false);
-        return;
-      }
       const canvas = canvasRef.current;
       if (!canvas) return;
+
+      const ai = getAi();
+      
+      // CHẾ ĐỘ DEMO KHI KHÔNG CÓ KEY
+      if (ai === null) {
+        // Giả lập độ trễ mạng
+        await new Promise(resolve => setTimeout(resolve, 800));
+        const result = mockPredict(canvas);
+        setPrediction(result.prediction.toString());
+        setScores(result.scores);
+        return;
+      }
+
       const dataUrl = canvas.toDataURL('image/png');
       const base64Data = dataUrl.split(',')[1];
+      
+      const prompt = "Đây là một chữ số viết tay từ tập dữ liệu MNIST. Hãy xác định chữ số (0-9) và cung cấp xác suất dự đoán cho mỗi chữ số. Chỉ trả về JSON duy nhất: { \"prediction\": số, \"scores\": { \"0\": x.x, \"1\": x.x, ... } }";
 
-      const model = ai.getGenerativeModel({ 
-        model: "gemini-1.5-flash",
-        generationConfig: {
+      const response = await ai.models.generateContent({ 
+        model: "gemini-3-flash-preview",
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                data: base64Data,
+                mimeType: "image/png"
+              }
+            },
+            { text: prompt }
+          ]
+        },
+        config: {
           responseMimeType: "application/json"
         }
       });
 
-      const prompt = "Đây là một chữ số viết tay từ tập dữ liệu MNIST. Hãy xác định chữ số (0-9) và cung cấp xác suất dự đoán cho mỗi chữ số. Chỉ trả về JSON duy nhất: { \"prediction\": số, \"scores\": { \"0\": x.x, \"1\": x.x, ... } }";
-
-      const result = await model.generateContent([
-        {
-          inlineData: {
-            data: base64Data,
-            mimeType: "image/png"
-          }
-        },
-        { text: prompt }
-      ]);
-
-      const response = result.response;
-      const text = response.text();
+      const text = response.text;
       if (!text || text === "") throw new Error("Mô hình không trả về kết quả.");
       const resultData = JSON.parse(text);
-      setPrediction(resultData.prediction);
+      setPrediction(resultData.prediction.toString());
       setScores(resultData.scores);
     } catch (error) {
       console.error("Lỗi dự đoán:", error);
@@ -278,11 +313,11 @@ export default function App() {
       </header>
 
       <main className="max-w-[1400px] mx-auto p-4 md:p-8">
-        {!(process.env.GEMINI_API_KEY || import.meta.env.VITE_GEMINI_API_KEY) && (
+        {!(process.env.GEMINI_API_KEY) && (
           <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 rounded-xl flex items-center gap-3 text-red-400">
             <AlertCircle className="w-5 h-5 shrink-0" />
             <p className="text-sm font-medium">
-              Thiếu <strong>GEMINI_API_KEY</strong>. Vui lòng thêm key vào biến môi trường trên Vercel để ứng dụng hoạt động.
+              Thiếu <strong>GEMINI_API_KEY</strong>. Vui lòng thêm key vào biến môi trường trên Vercel hoặc cấu hình AI Studio để ứng dụng hoạt động.
             </p>
           </div>
         )}
@@ -365,7 +400,9 @@ export default function App() {
               <div className="col-span-1 md:col-span-12 lg:col-span-6 bg-gradient-to-br from-slate-800 to-slate-950 border border-slate-800 rounded-2xl p-6 md:p-8 flex flex-col justify-between group transition-all min-h-[300px] md:min-h-0">
                 <div className="flex justify-between items-start">
                   <div className="space-y-1">
-                    <span className="text-[9px] md:text-[10px] font-bold text-cyan-400 uppercase tracking-widest">Dự đoán</span>
+                    <span className="text-[9px] md:text-[10px] font-bold text-cyan-400 uppercase tracking-widest">
+                      {getAi() ? "Dự đoán (AI)" : "Dự đoán (Demo Mode)"}
+                    </span>
                     <h2 className="text-xs md:text-sm font-semibold text-white">Kết quả hiện tại</h2>
                   </div>
                   <div className="flex flex-col items-end gap-1">
@@ -413,15 +450,15 @@ export default function App() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 md:gap-x-12 flex-grow py-1">
                   {Array.from({ length: 10 }).map((_, i) => (
                     <div key={i} className="flex items-center gap-3 md:gap-4 group/row">
-                      <span className={`text-xs font-mono w-4 font-bold transition-colors ${prediction == i ? 'text-cyan-400' : 'text-slate-500'}`}>{i}</span>
+                      <span className={`text-xs font-mono w-4 font-bold transition-colors ${prediction !== null && Number(prediction) === i ? 'text-cyan-400' : 'text-slate-500'}`}>{i}</span>
                       <div className="flex-grow h-1.5 md:h-2 bg-slate-950 border border-slate-800 rounded-full overflow-hidden relative">
                         <motion.div 
                           initial={{ width: 0 }}
                           animate={{ width: `${(scores[i] || 0) * 100}%` }}
-                          className={`h-full absolute left-0 top-0 transition-all ${prediction == i ? 'bg-cyan-400' : 'bg-slate-700'}`}
+                          className={`h-full absolute left-0 top-0 transition-all ${prediction !== null && Number(prediction) === i ? 'bg-cyan-400' : 'bg-slate-700'}`}
                         />
                       </div>
-                      <span className={`text-[9px] md:text-[10px] font-mono w-8 md:w-10 text-right ${prediction == i ? 'text-cyan-400' : 'text-slate-600'}`}>
+                      <span className={`text-[9px] md:text-[10px] font-mono w-8 md:w-10 text-right ${prediction !== null && Number(prediction) === i ? 'text-cyan-400' : 'text-slate-600'}`}>
                         {scores[i] ? `${Math.round(scores[i] * 100)}%` : '0%'}
                       </span>
                     </div>
