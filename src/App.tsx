@@ -198,15 +198,17 @@ export default function App() {
 
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: [
-          {
-            inlineData: {
-              data: base64Data,
-              mimeType: "image/png"
-            }
-          },
-          { text: "Đây là một chữ số viết tay. Hãy xác định chữ số (0-9) và cung cấp xác suất tự tin cho mỗi chữ số từ 0 đến 9. Chỉ trả về một đối tượng JSON như: { \"prediction\": 5, \"scores\": { \"0\": 0.01, \"1\": 0.02, ... } }" }
-        ],
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                data: base64Data,
+                mimeType: "image/png"
+              }
+            },
+            { text: "Đây là một chữ số viết tay. Hãy xác định chữ số (0-9) và cung cấp xác suất tự tin cho mỗi chữ số từ 0 đến 9. Chỉ trả về một đối tượng JSON như: { \"prediction\": 5, \"scores\": { \"0\": 0.01, \"1\": 0.02, ... } }" }
+          ]
+        },
         config: {
             responseMimeType: "application/json"
         }

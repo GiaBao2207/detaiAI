@@ -1,6 +1,6 @@
 {
   "name": "Nhận Diện Chữ Số Viết Tay",
-  "description": "Ứng dụng nhận diện chữ số viết tay thời gian thực với mã nguồn hướng dẫn huấn luyện mô hình Keras và triển khai Gradio.",
+  "description": "Trang web nhận diện chữ số viết tay thời gian thực với mã nguồn hướng dẫn huấn luyện mô hình Keras và triển khai Gradio.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }
