@@ -21,8 +21,13 @@ import {
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 
-// Initialize Gemini for real-time intuition in the browser
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Initialize Gemini lazily to avoid crashing on load if the key is missing
+const getAi = () => {
+  // Ưu tiên VITE_ prefixed cho Vite/Vercel
+  const key = (import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || "").trim();
+  if (!key || key === "" || key === "your_gemini_api_key_here") return null;
+  return new GoogleGenAI(key);
+};
 
 const TRAINING_CODE = `import tensorflow as tf
 from tensorflow.keras import layers, models
@@ -136,8 +141,6 @@ export default function App() {
       const ctx = canvas.getContext('2d');
       ctx?.beginPath(); // Reset path
     }
-    // Tự động dự đoán khi dừng vẽ
-    handlePredict();
   };
 
   const draw = (e: React.MouseEvent | React.TouchEvent) => {
@@ -193,32 +196,45 @@ export default function App() {
 
     setIsProcessing(true);
     try {
+      const ai = getAi();
+      if (!ai) {
+        alert("Thiếu API Key cho Gemini. Vui lòng thiết lập biến môi trường GEMINI_API_KEY (hoặc VITE_GEMINI_API_KEY).");
+        setIsProcessing(false);
+        return;
+      }
+      const canvas = canvasRef.current;
+      if (!canvas) return;
       const dataUrl = canvas.toDataURL('image/png');
       const base64Data = dataUrl.split(',')[1];
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                data: base64Data,
-                mimeType: "image/png"
-              }
-            },
-            { text: "Đây là một chữ số viết tay. Hãy xác định chữ số (0-9) và cung cấp xác suất tự tin cho mỗi chữ số từ 0 đến 9. Chỉ trả về một đối tượng JSON như: { \"prediction\": 5, \"scores\": { \"0\": 0.01, \"1\": 0.02, ... } }" }
-          ]
-        },
-        config: {
-            responseMimeType: "application/json"
+      const model = ai.getGenerativeModel({ 
+        model: "gemini-1.5-flash",
+        generationConfig: {
+          responseMimeType: "application/json"
         }
       });
 
-      const result = JSON.parse(response.text || '{}');
-      setPrediction(result.prediction);
-      setScores(result.scores);
+      const prompt = "Đây là một chữ số viết tay từ tập dữ liệu MNIST. Hãy xác định chữ số (0-9) và cung cấp xác suất dự đoán cho mỗi chữ số. Chỉ trả về JSON duy nhất: { \"prediction\": số, \"scores\": { \"0\": x.x, \"1\": x.x, ... } }";
+
+      const result = await model.generateContent([
+        {
+          inlineData: {
+            data: base64Data,
+            mimeType: "image/png"
+          }
+        },
+        { text: prompt }
+      ]);
+
+      const response = result.response;
+      const text = response.text();
+      if (!text || text === "") throw new Error("Mô hình không trả về kết quả.");
+      const resultData = JSON.parse(text);
+      setPrediction(resultData.prediction);
+      setScores(resultData.scores);
     } catch (error) {
       console.error("Lỗi dự đoán:", error);
+      alert(`Lỗi dự đoán: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setIsProcessing(false);
     }
@@ -262,6 +278,14 @@ export default function App() {
       </header>
 
       <main className="max-w-[1400px] mx-auto p-4 md:p-8">
+        {!(process.env.GEMINI_API_KEY || import.meta.env.VITE_GEMINI_API_KEY) && (
+          <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 rounded-xl flex items-center gap-3 text-red-400">
+            <AlertCircle className="w-5 h-5 shrink-0" />
+            <p className="text-sm font-medium">
+              Thiếu <strong>GEMINI_API_KEY</strong>. Vui lòng thêm key vào biến môi trường trên Vercel để ứng dụng hoạt động.
+            </p>
+          </div>
+        )}
         <AnimatePresence mode="wait">
           {activeTab === 'drawing' && (
             <motion.div 
@@ -278,12 +302,26 @@ export default function App() {
                     <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse shadow-sm shadow-cyan-500/50" />
                     <span className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest italic">Đầu vào: 28x28</span>
                   </div>
-                  <button 
-                    onClick={clearCanvas}
-                    className="flex items-center gap-2 text-[9px] md:text-[10px] bg-slate-800 hover:bg-slate-700 px-2 md:px-3 py-1.5 rounded transition-all text-slate-300 uppercase font-bold tracking-wider active:scale-95"
-                  >
-                    <Trash2 className="w-3 h-3" /> Xóa
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={clearCanvas}
+                      className="flex items-center gap-2 text-[9px] md:text-[10px] bg-slate-800 hover:bg-slate-700 px-2 md:px-3 py-1.5 rounded transition-all text-slate-300 uppercase font-bold tracking-wider active:scale-95"
+                    >
+                      <Trash2 className="w-3 h-3" /> Xóa
+                    </button>
+                    <button 
+                      onClick={handlePredict}
+                      disabled={isProcessing}
+                      className="flex items-center gap-2 text-[9px] md:text-[10px] bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 disabled:text-slate-600 px-3 md:px-4 py-1.5 rounded transition-all text-black uppercase font-black tracking-widest active:scale-95 shadow-lg shadow-cyan-500/20"
+                    >
+                      {isProcessing ? (
+                        <div className="w-3 h-3 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                      ) : (
+                        <Zap className="w-3 h-3 fill-current" />
+                      )}
+                      Dự đoán
+                    </button>
+                  </div>
                 </div>
                 
                 <div className="flex-grow flex items-center justify-center p-4 md:p-8 bg-black relative overflow-hidden">
