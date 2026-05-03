@@ -23,13 +23,11 @@ import { GoogleGenAI } from "@google/genai";
 
 // Initialize Gemini lazily to avoid crashing on load if the key is missing
 const getAi = () => {
-  // Ưu tiên lấy từ biến môi trường (an toàn hơn)
-  let key = (process.env.GEMINI_API_KEY || "").trim();
+  // Sử dụng biến môi trường của Vite: bắt đầu bằng VITE_
+  const key = (import.meta.env.VITE_GEMINI_API_KEY || "").trim();
   
-  // Nếu không thấy biến môi trường, sử dụng Key bạn đã cung cấp làm dự phòng
-  if (!key || key === "" || key.includes("your_gemini_api_key")) {
-    key = "AIzaSyCv_FeMBaNx6arXTOXKdgC6AMd2agV6LMU";
-  }
+  // Nếu key không tồn tại, trả về null để ứng dụng chạy chế độ Demo (không lỗi crash)
+  if (!key || key === "" || key === "your_gemini_api_key_here") return null;
   
   try {
     return new GoogleGenAI({ apiKey: key });
