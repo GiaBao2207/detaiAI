@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/// <reference types="vite/client" />
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -22,15 +23,20 @@ import {
 import { GoogleGenAI } from "@google/genai";
 
 // Initialize Gemini lazily to avoid crashing on load if the key is missing
-const getAi = () => {
-  // Sử dụng biến môi trường của Vite: bắt đầu bằng VITE_
+const getAi = (): any => {
+  // Use Vite environment variable (prefixed with VITE_)
+  // Note: import.meta.env is the correct way for Vite
   const key = (import.meta.env.VITE_GEMINI_API_KEY || "").trim();
   
-  // Nếu key không tồn tại, trả về null để ứng dụng chạy chế độ Demo (không lỗi crash)
-  if (!key || key === "" || key === "your_gemini_api_key_here") return null;
+  // Fallback to the hardcoded key provided by the user if environment variable is missing
+  // This ensures it works in the preview environment even if .env is not yet loaded/configured in Vercel
+  const finalKey = key || "AIzaSyDv9seiF02xsYHBM0Frh-jiIqPA1s3WkE0";
+  
+  if (!finalKey || finalKey === "" || finalKey === "your_gemini_api_key_here") return null;
   
   try {
-    return new GoogleGenAI({ apiKey: key });
+    // CORRECT way according to skill: { apiKey: finalKey }
+    return new GoogleGenAI({ apiKey: finalKey });
   } catch (e) {
     console.error("Lỗi khởi tạo Gemini:", e);
     return null;
@@ -43,16 +49,17 @@ const mockPredict = (canvas: HTMLCanvasElement) => {
   
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
-  let whitePixels = 0;
+  let totalBrightness = 0;
   for (let i = 0; i < data.length; i += 4) {
-    if (data[i] > 128) whitePixels++;
+    totalBrightness += (data[i] + data[i+1] + data[i+2]) / 3;
   }
   
-  // Thuật toán giả lập dựa trên mật độ pixel để có kết quả thay đổi
-  const prediction = (whitePixels % 7 + 2) % 10; 
+  // Heuristic giả lập (chỉ mang tính minh họa khi không có AI)
+  // Tính toán dựa trên độ sáng để có kết quả khác nhau cho các nét vẽ khác nhau
+  const prediction = (Math.floor(totalBrightness / 2000) % 10); 
   const scores: Record<number, number> = {};
   for (let i = 0; i < 10; i++) {
-    scores[i] = i === prediction ? 0.85 : 0.15 / 9;
+    scores[i] = i === prediction ? 0.75 + (Math.random() * 0.1) : (Math.random() * 0.03);
   }
   return { prediction, scores };
 };
@@ -138,6 +145,8 @@ export default function App() {
   const [prediction, setPrediction] = useState<string | null>(null);
   const [scores, setScores] = useState<Record<number, number>>({});
   
+  const [showWarning, setShowWarning] = useState(false);
+  
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
 
@@ -151,7 +160,7 @@ export default function App() {
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
-        ctx.lineWidth = 15;
+        ctx.lineWidth = 22;
         ctx.strokeStyle = 'white';
       }
     }
@@ -168,6 +177,41 @@ export default function App() {
     if (canvas) {
       const ctx = canvas.getContext('2d');
       ctx?.beginPath(); // Reset path
+      
+      // Kiểm tra xem có vẽ quá rộng không (dấu hiệu nhiều chữ số)
+      checkDrawingComplexity(canvas);
+    }
+  };
+
+  const checkDrawingComplexity = (canvas: HTMLCanvasElement) => {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    
+    let minX = canvas.width;
+    let maxX = 0;
+    let hasPixels = false;
+    
+    for (let y = 0; y < canvas.height; y++) {
+      for (let x = 0; x < canvas.width; x++) {
+        const index = (y * canvas.width + x) * 4;
+        // Kiểm tra pixel trắng (nét vẽ)
+        if (data[index] > 50) { 
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          hasPixels = true;
+        }
+      }
+    }
+    
+    if (hasPixels) {
+      const width = maxX - minX;
+      // Nếu chiều rộng vùng vẽ > 65% canvas (khoảng 180px), cảnh báo có thể có nhiều chữ số
+      setShowWarning(width > 180);
+    } else {
+      setShowWarning(false);
     }
   };
 
@@ -197,6 +241,7 @@ export default function App() {
     }
     setPrediction(null);
     setScores({});
+    setShowWarning(false);
   };
 
   const handlePredict = async () => {
@@ -229,19 +274,16 @@ export default function App() {
 
       const ai = getAi();
       
-      // Khởi tạo hàm thực hiện dự đoán thực tế hoặc demo
+      // Khởi tạo hàm thực hiện dự đoán thực tế
       const runPrediction = async () => {
-        // CHẾ ĐỘ DEMO KHI KHÔNG CÓ KEY
-        if (ai === null) {
-          await new Promise(resolve => setTimeout(resolve, 800));
-          return mockPredict(canvas);
+        if (!ai) {
+          throw new Error("Gemini API chưa được cấu hình. Hãy kiểm tra API Key.");
         }
 
         const dataUrl = canvas.toDataURL('image/png');
         const base64Data = dataUrl.split(',')[1];
         
-        const prompt = "Đây là một chữ số viết tay từ tập dữ liệu MNIST. Hãy xác định chữ số (0-9) và cung cấp xác suất dự đoán cho mỗi chữ số. Chỉ trả về JSON duy nhất: { \"prediction\": số, \"scores\": { \"0\": x.x, \"1\": x.x, ... } }";
-
+        // CORRECT way according to skill: Use ai.models.generateContent directly
         const response = await ai.models.generateContent({ 
           model: "gemini-3-flash-preview", 
           contents: {
@@ -252,16 +294,33 @@ export default function App() {
                   mimeType: "image/png"
                 }
               },
-              { text: prompt }
+              { text: "Đây là một chữ số viết tay đơn lẻ (0-9) trong khung hình 28x28 (MNIST style). Hãy nhận diện chữ số này. Kết quả phải là JSON chính xác." }
             ]
           },
           config: {
-            responseMimeType: "application/json"
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: "OBJECT",
+              properties: {
+                prediction: { type: "NUMBER" },
+                scores: {
+                  type: "OBJECT",
+                  properties: {
+                    "0": { type: "NUMBER" }, "1": { type: "NUMBER" }, "2": { type: "NUMBER" },
+                    "3": { type: "NUMBER" }, "4": { type: "NUMBER" }, "5": { type: "NUMBER" },
+                    "6": { type: "NUMBER" }, "7": { type: "NUMBER" }, "8": { type: "NUMBER" },
+                    "9": { type: "NUMBER" }
+                  }
+                }
+              },
+              required: ["prediction", "scores"]
+            }
           }
         });
 
         const text = response.text;
-        if (!text || text === "") throw new Error("Mô hình không trả về kết quả.");
+        if (!text) throw new Error("Mô hình không trả về kết quả.");
+        
         const resultData = JSON.parse(text);
         return {
           prediction: resultData.prediction.toString(),
@@ -275,23 +334,8 @@ export default function App() {
 
     } catch (error: any) {
       console.error("Lỗi dự đoán:", error);
-      
       const errorMessage = typeof error === 'string' ? error : (error?.message || String(error));
-      const shouldFallback = errorMessage.includes("429") || 
-                            errorMessage.includes("quota") || 
-                            errorMessage.includes("RESOURCE_EXHAUSTED") ||
-                            errorMessage.includes("current quota");
-
-      if (shouldFallback) {
-        console.warn("Gemini Quota hit, falling back to mock predict.");
-        if (canvasRef.current) {
-          const fallbackResult = mockPredict(canvasRef.current);
-          setPrediction(fallbackResult.prediction.toString());
-          setScores(fallbackResult.scores);
-        }
-      } else {
-        alert(`Lỗi dự đoán: ${errorMessage}`);
-      }
+      alert(`Lỗi dự đoán: ${errorMessage}`);
     } finally {
       setIsProcessing(false);
     }
@@ -335,14 +379,6 @@ export default function App() {
       </header>
 
       <main className="max-w-[1400px] mx-auto p-4 md:p-8">
-        {!getAi() && (
-          <div className="mb-6 p-4 bg-orange-500/10 border border-orange-500/50 rounded-xl flex items-center gap-3 text-orange-400">
-            <Info className="w-5 h-5 shrink-0" />
-            <p className="text-sm font-medium">
-              Ứng dụng đang chạy ở <strong>Chế độ Giả lập</strong>. Để sử dụng AI thực tế, hãy cấu hình <strong>GEMINI_API_KEY</strong> trong môi trường.
-            </p>
-          </div>
-        )}
         <AnimatePresence mode="wait">
           {activeTab === 'drawing' && (
             <motion.div 
@@ -408,13 +444,39 @@ export default function App() {
                   </div>
                 </div>
                 
-                <div className="p-3 md:p-4 bg-slate-900/40 border-t border-slate-800 flex items-center gap-3 md:gap-4 text-slate-500">
-                  <div className="w-2 h-2 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0">
-                    <div className="w-1 h-1 rounded-full bg-emerald-500" />
+                <div className="p-3 md:p-4 bg-slate-900/40 border-t border-slate-800 flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3 text-slate-400">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0">
+                        <div className="w-1 h-1 rounded-full bg-emerald-500" />
+                      </div>
+                      <p className="text-[8px] md:text-[10px] font-mono leading-relaxed uppercase tracking-wider truncate">
+                        Hệ thống nhận diện chữ số từ 0-9
+                      </p>
+                    </div>
                   </div>
-                  <p className="text-[8px] md:text-[10px] font-mono leading-relaxed uppercase tracking-wider truncate">
-                    Xử lý: Grayscale → [28, 28, 1] → Chuẩn hóa [0, 1]
-                  </p>
+                  
+                  <AnimatePresence>
+                    {showWarning && (
+                      <motion.div 
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="flex items-start gap-2 p-2 bg-orange-500/10 border border-orange-500/30 rounded-lg"
+                      >
+                        <AlertCircle className="w-3 h-3 text-orange-500 shrink-0 mt-0.5" />
+                        <p className="text-[9px] text-orange-400 font-medium leading-tight">
+                          Phát hiện vùng vẽ rộng. Vui lòng chỉ viết <strong>MỘT</strong> chữ số duy nhất để AI đạt độ chính xác cao nhất.
+                        </p>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                  
+                  <div className="pt-2 border-t border-slate-800/50">
+                    <p className="text-[8px] md:text-[10px] font-mono text-slate-600 uppercase tracking-wider">
+                      Xử lý: Grayscale → [28, 28, 1] → Chuẩn hóa [0, 1]
+                    </p>
+                  </div>
                 </div>
               </div>
 
@@ -445,7 +507,7 @@ export default function App() {
                   
                   <div className="flex flex-row sm:flex-col items-center sm:items-start gap-4 sm:gap-1 sm:border-l border-slate-800 sm:pl-8 lg:pl-12 py-2 md:py-4">
                     <div className="text-3xl md:text-5xl font-mono font-bold text-white tracking-tighter">
-                      {prediction !== null ? `${Math.round((scores[Number(prediction)] || 0) * 1000) / 10}%` : <span className="opacity-20">—</span>}
+                      {prediction !== null ? `${(scores[Number(prediction)] * 100).toFixed(1)}%` : <span className="opacity-20">—</span>}
                     </div>
                     <div className="text-[9px] md:text-[10px] uppercase text-slate-500 tracking-widest font-bold">Độ tin cậy</div>
                   </div>
